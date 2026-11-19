@@ -5,7 +5,7 @@ This guide provides verbatim talking points, architectural explanations, and tec
 ---
 
 ## 🎙️ 1. The 60-Second Elevator Pitch
-> *"In this project, I performed commercial and customer analytics on an international digital music retail platform using MySQL. I worked with an 11-table normalized relational database comprising over 18,000 total records and a 3,500+ track catalog. Rather than just running basic lookups, I structured the analysis to answer executive-level business questions: identifying top international cities like Prague for live promotional events, evaluating rock catalog leaders, leveraging NTILE window functions to segment Customer Lifetime Value into loyalty tiers, utilizing LAG to analyze Month-over-Month revenue momentum and repurchase intervals, and applying DENSE_RANK within CTEs to identify localized genre consumption preferences across global markets."*
+> *"In this project, I performed commercial and customer analytics on an international digital music retail platform using MySQL. I worked with an 11-table normalized relational database comprising over 18,000 total records and a 3,500+ track catalog. Rather than just running basic lookups, I structured the analysis to answer executive-level business questions: identifying top international cities like Prague for live promotional events, evaluating rock catalog leaders, ranking Customer Lifetime Value (CLV) and segmenting customers into loyalty tiers using CTEs and DENSE_RANK, evaluating business growth and customer retention rates, and uncovering country-wise music genre consumption patterns."*
 
 ---
 
@@ -15,7 +15,7 @@ This guide provides verbatim talking points, architectural explanations, and tec
 > *"Imported and structured an 11-table normalized relational database across 3,500+ records in MySQL to evaluate business growth, customer retention, and catalog performance."*
 
 #### Likely Interviewer Question:
-**"How did you structure and normalize the database? Why does your resume say 3,500+ records?"**
+**"How did you structure and normalize the database? How did you evaluate customer retention?"**
 
 #### Your Answer:
 - **Normalization (3NF)**:
@@ -23,12 +23,11 @@ This guide provides verbatim talking points, architectural explanations, and tec
   - Transactions are separated into **`invoice`** (header: customer, date, total, billing location) and **`invoice_line`** (line-item details: track, unit price, quantity).
   - The music catalog separates **`artist`** (artist ID, name) from **`album`** (album ID, title, artist ID) and **`track`** (track ID, name, milliseconds, unit price, foreign keys to album, genre, and media_type).
   - Many-to-many playlist associations are handled via a dedicated junction table: **`playlist_track`**.
+- **Customer Retention**:
+  - *"To evaluate retention, I used a CTE to aggregate total orders per customer, then applied `CASE WHEN order_frequency > 1 THEN 1 ELSE 0 END` to distinguish repeat buyers from one-time purchasers and calculate the store's retention rate."*
 - **Data Scale**:
   - The core product catalog table (`track`) contains **3,503 records** (hence "3,500+ records").
-  - Across all 11 tables combined, the database contains **18,327 records** (with `playlist_track` having 8,715 records and `invoice_line` having 4,757 records).
-- **Relational Integrity & Indexing**:
-  - Defined explicit Foreign Key constraints with `ON DELETE CASCADE` on transaction details and `ON DELETE RESTRICT` on catalog lookups.
-  - Added B-Tree composite indexes on foreign keys (`customer_id`, `invoice_id`, `genre_id`, `track_id`) to accelerate multi-table joins.
+  - Across all 11 tables combined, the database contains **18,327 records**.
 
 ---
 
@@ -50,42 +49,30 @@ This guide provides verbatim talking points, architectural explanations, and tec
 ---
 
 ### Resume Bullet 3:
-> *"Leveraged Common Table Expressions (CTEs) and window functions (DENSE_RANK, NTILE, LAG) to segment customer lifetime value (CLV) into loyalty tiers and uncover country-wise music genre consumption patterns."*
+> *"Leveraged Common Table Expressions (CTEs) and window functions (DENSE_RANK) to segment customer lifetime value (CLV) into loyalty tiers and uncover country-wise music genre consumption patterns."*
 
 #### Likely Interviewer Question 1:
-**"Why did you use `NTILE` for CLV loyalty tiers instead of hardcoded `CASE WHEN` spending brackets?"**
+**"How did you calculate Customer Lifetime Value (CLV) and assign loyalty tiers?"**
 
 #### Your Answer:
-- *"Hardcoding arbitrary spend thresholds (e.g., spend > $100 = VIP) introduces subjective bias and doesn't adapt dynamically as revenue scales."*
-- *"By using **`NTILE(4) OVER (ORDER BY SUM(total) DESC)`**, I mathematically segmented the customer base into 4 statistically balanced quartiles:*
-  - *Quartile 1 (Platinum): Top 25% of spenders.*
-  - *Quartile 2 (Gold): 50th to 75th percentile.*
-  - *Quartile 3 (Silver): 25th to 50th percentile.*
-  - *Quartile 4 (Bronze): Bottom 25%.*
-- *"The analysis revealed that the **Platinum tier generates 33.9% of our store's total revenue** with an average spend of **$106.59**, proving that retention efforts should heavily prioritize this top quartile."*
+- *"I created a Common Table Expression (CTE) called `customer_clv` that aggregated total spend per customer by joining the `customer` and `invoice` tables."*
+- *"Inside the CTE, I applied the **`DENSE_RANK() OVER (ORDER BY SUM(total) DESC)`** window function to assign every customer an ordinal ranking from highest to lowest spender."*
+- *"Then, in the main query, I used a clean **`CASE WHEN`** statement to bucket them into clear business loyalty tiers:*
+  - *Platinum Tier: Customers spending **$100+**.*
+  - *Gold Tier: Customers spending **$75 - $99.99**.*
+  - *Silver Tier: Customers spending **$50 - $74.99**.*
+  - *Bronze Tier: Customers spending **under $50**.*"
+- *"This combination of CTE, DENSE_RANK, and conditional logic gave marketing an immediate view of top customers for VIP loyalty perks."*
 
 ---
 
 #### Likely Interviewer Question 2:
-**"How did you use `LAG()` in your retention and Month-over-Month analysis?"**
-
-#### Your Answer:
-- **Month-over-Month (MoM) Growth**:
-  - *"I aggregated revenue by year-month into a CTE, then used `LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)` to pull the prior month's revenue onto the current row."*
-  - *"From there, I calculated both dollar variance `(current - prior)` and percentage growth rate `((current - prior) / prior) * 100`, which revealed revenue acceleration in months like April (+37.14%) and contraction in others."*
-- **Repurchase Cadence & Retention**:
-  - *"I also applied `LAG(invoice_date, 1) OVER (PARTITION BY customer_id ORDER BY invoice_date)` to calculate the number of days between successive purchases for repeat customers using `DATEDIFF()`."*
-  - *"This identified an average repurchase cycle of approximately 60 days, establishing a clear threshold for automated re-engagement triggers."*
-
----
-
-#### Likely Interviewer Question 3:
 **"Why did you choose `DENSE_RANK()` instead of `ROW_NUMBER()` or `RANK()` for country genre consumption patterns?"**
 
 #### Your Answer:
 - *"When identifying the top genre per country, two genres might tie with the exact same number of track purchases and revenue."*
 - *"`ROW_NUMBER()` arbitrarily picks one genre and ignores the tie, which distorts business reality."*
-- *"`RANK()` handles ties, but it skips the next rank (e.g., 1, 1, 3), which causes ranking gaps."*
+- *"`RANK()` handles ties, but it skips the next rank (e.g., 1, 1, 3), creating ranking gaps."*
 - *"`DENSE_RANK()` gracefully preserves tied top genres (both receive Rank 1) without skipping ordinal numbers (1, 1, 2). Filtering by `WHERE genre_rank = 1` guarantees that all legitimate top genres in a country are captured."*
 - *"This query revealed that while **Rock** is #1 in the US, Canada, Brazil, and Germany, **Alternative & Punk** is the #1 genre in Argentina."*
 
@@ -93,32 +80,45 @@ This guide provides verbatim talking points, architectural explanations, and tec
 
 ## 💡 3. Key SQL Syntax Quick Reference
 
-### Window Function: NTILE(4)
+### Window Function: DENSE_RANK() for Spender Ranking
 ```sql
-WITH clv AS (
+WITH customer_clv AS (
     SELECT customer_id, SUM(total) AS total_spend,
-           NTILE(4) OVER (ORDER BY SUM(total) DESC) AS quartile
-    FROM invoice GROUP BY customer_id
+           DENSE_RANK() OVER (ORDER BY SUM(total) DESC) AS customer_rank
+    FROM invoice
+    GROUP BY customer_id
 )
-SELECT quartile, COUNT(*), MIN(total_spend), MAX(total_spend), AVG(total_spend)
-FROM clv GROUP BY quartile;
+SELECT customer_id, total_spend, customer_rank,
+       CASE 
+           WHEN total_spend >= 100 THEN 'Platinum'
+           WHEN total_spend >= 75  THEN 'Gold'
+           WHEN total_spend >= 50  THEN 'Silver'
+           ELSE 'Bronze'
+       END AS loyalty_tier
+FROM customer_clv;
 ```
 
-### Window Function: LAG()
+### Customer Retention Rate (CTE + CASE WHEN)
 ```sql
-SELECT sales_month, monthly_revenue,
-       LAG(monthly_revenue, 1) OVER (ORDER BY sales_month) AS prev_rev,
-       ROUND(((monthly_revenue - LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)) / 
-              LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)) * 100, 2) AS mom_pct
-FROM monthly_summary;
+WITH customer_orders AS (
+    SELECT customer_id, COUNT(invoice_id) AS order_freq
+    FROM invoice
+    GROUP BY customer_id
+)
+SELECT 
+    COUNT(customer_id) AS total_customers,
+    SUM(CASE WHEN order_freq > 1 THEN 1 ELSE 0 END) AS repeat_customers,
+    ROUND((SUM(CASE WHEN order_freq > 1 THEN 1 ELSE 0 END) * 100.0) / COUNT(customer_id), 2) AS retention_rate_pct
+FROM customer_orders;
 ```
 
-### Window Function: DENSE_RANK()
+### Window Function: DENSE_RANK() for Regional Preferences
 ```sql
 WITH ranked_genres AS (
     SELECT country, genre_name, COUNT(*) AS units,
            DENSE_RANK() OVER (PARTITION BY country ORDER BY COUNT(*) DESC) AS rnk
-    FROM country_sales_view GROUP BY country, genre_name
+    FROM country_sales_view 
+    GROUP BY country, genre_name
 )
 SELECT * FROM ranked_genres WHERE rnk = 1;
 ```

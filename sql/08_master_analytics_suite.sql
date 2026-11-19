@@ -4,7 +4,7 @@
 -- File: 08_master_analytics_suite.sql
 -- Description: Consolidated master script containing end-to-end analytical queries.
 --              Includes multi-table JOINs, nested subqueries, CTEs, and window functions
---              (DENSE_RANK, NTILE, LAG).
+--              (DENSE_RANK).
 -- =====================================================================================
 
 USE music_store_db;
@@ -84,10 +84,10 @@ LIMIT 10;
 
 
 -- =====================================================================================
--- SECTION 4: CUSTOMER LIFETIME VALUE (CLV) & LOYALTY TIERS (NTILE)
+-- SECTION 4: CUSTOMER LIFETIME VALUE (CLV) & LOYALTY TIERS (DENSE_RANK + CASE WHEN)
 -- =====================================================================================
 
--- Question: Segment customers into 4 data-driven loyalty tiers using NTILE(4)
+-- Question: Segment customers into loyalty tiers based on lifetime spend and rank them
 WITH customer_clv AS (
     SELECT 
         c.customer_id,
@@ -95,55 +95,56 @@ WITH customer_clv AS (
         c.country,
         ROUND(SUM(i.total), 2) AS lifetime_spend,
         COUNT(i.invoice_id) AS total_orders,
-        NTILE(4) OVER (ORDER BY SUM(i.total) DESC) AS clv_quartile
+        DENSE_RANK() OVER (ORDER BY SUM(i.total) DESC) AS customer_rank
     FROM customer c
     INNER JOIN invoice i ON c.customer_id = i.customer_id
     GROUP BY c.customer_id, customer_name, c.country
 )
 SELECT 
-    clv_quartile,
+    customer_id,
+    customer_name,
+    country,
+    total_orders,
+    lifetime_spend,
+    customer_rank,
     CASE 
-        WHEN clv_quartile = 1 THEN 'Platinum'
-        WHEN clv_quartile = 2 THEN 'Gold'
-        WHEN clv_quartile = 3 THEN 'Silver'
-        ELSE 'Bronze'
-    END AS loyalty_tier,
-    COUNT(customer_id) AS customer_count,
-    ROUND(MIN(lifetime_spend), 2) AS min_spend,
-    ROUND(MAX(lifetime_spend), 2) AS max_spend,
-    ROUND(AVG(lifetime_spend), 2) AS avg_spend,
-    ROUND(SUM(lifetime_spend), 2) AS tier_revenue,
-    ROUND((SUM(lifetime_spend) / (SELECT SUM(total) FROM invoice)) * 100, 2) AS revenue_share_pct
+        WHEN lifetime_spend >= 100.00 THEN 'Platinum Tier ($100+)'
+        WHEN lifetime_spend >= 75.00  THEN 'Gold Tier ($75 - $99.99)'
+        WHEN lifetime_spend >= 50.00  THEN 'Silver Tier ($50 - $74.99)'
+        ELSE 'Bronze Tier (< $50)'
+    END AS loyalty_tier
 FROM customer_clv
-GROUP BY clv_quartile
-ORDER BY clv_quartile;
+ORDER BY lifetime_spend DESC;
 
 
 -- =====================================================================================
--- SECTION 5: CUSTOMER RETENTION & MONTH-OVER-MONTH REVENUE (LAG)
+-- SECTION 5: BUSINESS GROWTH & CUSTOMER RETENTION ANALYSIS
 -- =====================================================================================
 
--- Question: Track Month-over-Month (MoM) revenue growth using LAG()
-WITH monthly_revenue_summary AS (
+-- Monthly sales volume & revenue trajectory
+SELECT 
+    DATE_FORMAT(invoice_date, '%Y-%m') AS sales_month,
+    COUNT(invoice_id) AS total_orders,
+    COUNT(DISTINCT customer_id) AS active_customers,
+    ROUND(SUM(total), 2) AS monthly_revenue
+FROM invoice
+GROUP BY sales_month
+ORDER BY sales_month ASC;
+
+-- Customer retention & repeat purchase rate (CTE + CASE WHEN)
+WITH customer_purchase_counts AS (
     SELECT 
-        DATE_FORMAT(invoice_date, '%Y-%m') AS sales_month,
-        ROUND(SUM(total), 2) AS monthly_revenue,
-        COUNT(invoice_id) AS total_orders
+        customer_id,
+        COUNT(invoice_id) AS order_frequency
     FROM invoice
-    GROUP BY sales_month
+    GROUP BY customer_id
 )
 SELECT 
-    sales_month,
-    monthly_revenue,
-    LAG(monthly_revenue, 1) OVER (ORDER BY sales_month) AS prior_month_revenue,
-    ROUND(monthly_revenue - LAG(monthly_revenue, 1) OVER (ORDER BY sales_month), 2) AS mom_variance,
-    ROUND(
-        ((monthly_revenue - LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)) / 
-        LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)) * 100.0, 
-        2
-    ) AS mom_growth_rate_pct
-FROM monthly_revenue_summary
-ORDER BY sales_month ASC;
+    COUNT(customer_id) AS total_customer_base,
+    SUM(CASE WHEN order_frequency > 1 THEN 1 ELSE 0 END) AS repeat_customers,
+    SUM(CASE WHEN order_frequency = 1 THEN 1 ELSE 0 END) AS one_time_customers,
+    ROUND((SUM(CASE WHEN order_frequency > 1 THEN 1 ELSE 0 END) * 100.0) / COUNT(customer_id), 2) AS retention_rate_pct
+FROM customer_purchase_counts;
 
 
 -- =====================================================================================

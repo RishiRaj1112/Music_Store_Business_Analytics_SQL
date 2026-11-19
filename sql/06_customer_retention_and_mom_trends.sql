@@ -2,105 +2,89 @@
 -- Project: Music Store Business Analytics using SQL
 -- Database: MySQL 8.0+
 -- File: 06_customer_retention_and_mom_trends.sql
--- Description: Common Table Expressions (CTEs) and LAG window functions to evaluate 
---              business growth, Month-over-Month (MoM) revenue trajectory, customer 
---              retention, and repeat purchase cadence.
--- Resume Focus: "evaluate business growth, customer retention... window functions (LAG)"
+-- Description: Aggregations, GROUP BY, and Common Table Expressions (CTEs) to evaluate 
+--              business growth trends, monthly sales trajectory, customer retention rate, 
+--              and acquisition cohorts.
+-- Resume Focus: "evaluate business growth, customer retention, and catalog performance"
 -- =====================================================================================
 
 USE music_store_db;
 
 -- -------------------------------------------------------------------------------------
--- 1. MONTH-OVER-MONTH (MoM) REVENUE GROWTH ANALYSIS USING LAG()
+-- 1. MONTHLY BUSINESS GROWTH & REVENUE TRAJECTORY
 -- -------------------------------------------------------------------------------------
--- Business Objective: Track temporal revenue fluctuations, sales acceleration, and 
--- calculate MoM growth percentages across all operational months.
--- Window Function: LAG() looks back 1 row ordered by invoice month.
+-- Business Objective: Track temporal sales volume, active customer count, and total 
+-- revenue month by month to analyze store growth trends.
 
-WITH monthly_sales AS (
-    SELECT 
-        DATE_FORMAT(invoice_date, '%Y-%m') AS sales_month,
-        COUNT(invoice_id) AS total_monthly_orders,
-        COUNT(DISTINCT customer_id) AS unique_purchasers,
-        ROUND(SUM(total), 2) AS monthly_revenue
-    FROM invoice
-    GROUP BY sales_month
-)
 SELECT 
-    sales_month,
-    total_monthly_orders,
-    unique_purchasers,
-    monthly_revenue,
-    LAG(monthly_revenue, 1) OVER (ORDER BY sales_month) AS prior_month_revenue,
-    ROUND(monthly_revenue - LAG(monthly_revenue, 1) OVER (ORDER BY sales_month), 2) AS mom_dollar_variance,
-    ROUND(
-        ((monthly_revenue - LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)) / 
-        LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)) * 100.0, 
-        2
-    ) AS mom_growth_rate_pct
-FROM monthly_sales
+    DATE_FORMAT(invoice_date, '%Y-%m') AS sales_month,
+    COUNT(invoice_id) AS total_orders,
+    COUNT(DISTINCT customer_id) AS active_customers,
+    ROUND(SUM(total), 2) AS monthly_revenue,
+    ROUND(AVG(total), 2) AS avg_order_value
+FROM invoice
+GROUP BY sales_month
 ORDER BY sales_month ASC;
 
 
 -- -------------------------------------------------------------------------------------
--- 2. CUSTOMER REPEAT PURCHASE CADENCE & RETENTION GAP ANALYSIS
+-- 2. ANNUAL (YEAR-OVER-YEAR) BUSINESS GROWTH SUMMARY
 -- -------------------------------------------------------------------------------------
--- Business Objective: Determine customer purchasing frequency and time gap between 
--- consecutive transactions to identify churn risk thresholds.
--- Window Function: LAG(invoice_date) PARTITION BY customer_id ORDER BY invoice_date.
+-- Business Objective: Summarize annual business growth, total transaction volume, 
+-- and gross revenue generated per calendar year.
 
-WITH customer_order_timeline AS (
+SELECT 
+    YEAR(invoice_date) AS sales_year,
+    COUNT(invoice_id) AS annual_orders,
+    COUNT(DISTINCT customer_id) AS unique_customers,
+    ROUND(SUM(total), 2) AS annual_gross_revenue,
+    ROUND(AVG(total), 2) AS avg_order_value
+FROM invoice
+GROUP BY sales_year
+ORDER BY sales_year ASC;
+
+
+-- -------------------------------------------------------------------------------------
+-- 3. CUSTOMER RETENTION & REPEAT PURCHASE RATE (CTE + CASE WHEN)
+-- -------------------------------------------------------------------------------------
+-- Business Objective: Calculate the customer retention rate by identifying what portion 
+-- of the customer base makes repeat purchases (orders > 1) vs. one-time purchases.
+
+WITH customer_purchase_counts AS (
     SELECT 
         customer_id,
-        invoice_id,
-        invoice_date,
-        total,
-        LAG(invoice_date, 1) OVER (
-            PARTITION BY customer_id 
-            ORDER BY invoice_date
-        ) AS previous_order_date
+        COUNT(invoice_id) AS order_frequency,
+        ROUND(SUM(total), 2) AS total_spend
     FROM invoice
-),
-order_gaps AS (
+    GROUP BY customer_id
+)
+SELECT 
+    COUNT(customer_id) AS total_customer_base,
+    SUM(CASE WHEN order_frequency > 1 THEN 1 ELSE 0 END) AS repeat_customers,
+    SUM(CASE WHEN order_frequency = 1 THEN 1 ELSE 0 END) AS one_time_customers,
+    ROUND((SUM(CASE WHEN order_frequency > 1 THEN 1 ELSE 0 END) * 100.0) / COUNT(customer_id), 2) AS retention_rate_pct
+FROM customer_purchase_counts;
+
+
+-- -------------------------------------------------------------------------------------
+-- 4. CUSTOMER ACQUISITION COHORT ANALYSIS
+-- -------------------------------------------------------------------------------------
+-- Business Objective: Determine when new customers were first acquired by tracking 
+-- their earliest invoice date.
+
+WITH customer_first_order AS (
     SELECT 
         customer_id,
-        invoice_id,
-        invoice_date,
-        previous_order_date,
-        DATEDIFF(invoice_date, previous_order_date) AS days_between_orders
-    FROM customer_order_timeline
-    WHERE previous_order_date IS NOT NULL
+        DATE_FORMAT(MIN(invoice_date), '%Y-%m') AS acquisition_month,
+        ROUND(SUM(total), 2) AS customer_lifetime_spend
+    FROM invoice
+    GROUP BY customer_id
 )
 SELECT 
-    ROUND(AVG(days_between_orders), 1) AS avg_days_between_purchases,
-    MIN(days_between_orders) AS min_repurchase_gap_days,
-    MAX(days_between_orders) AS max_repurchase_gap_days,
-    COUNT(*) AS total_repeat_orders_analyzed
-FROM order_gaps;
-
-
--- -------------------------------------------------------------------------------------
--- 3. CUSTOMER ACQUISITION COHORT ANALYSIS
--- -------------------------------------------------------------------------------------
--- Business Objective: Evaluate customer acquisition volume by cohort month and track 
--- aggregate revenue generated per cohort.
-
-WITH customer_cohorts AS (
-    SELECT 
-        c.customer_id,
-        DATE_FORMAT(MIN(i.invoice_date), '%Y-%m') AS cohort_month,
-        ROUND(SUM(i.total), 2) AS customer_cumulative_spend,
-        COUNT(i.invoice_id) AS customer_invoice_count
-    FROM customer c
-    INNER JOIN invoice i ON c.customer_id = i.customer_id
-    GROUP BY c.customer_id
-)
-SELECT 
-    cohort_month,
+    acquisition_month,
     COUNT(customer_id) AS new_customers_acquired,
-    ROUND(SUM(customer_cumulative_spend), 2) AS total_cohort_lifetime_revenue,
-    ROUND(AVG(customer_cumulative_spend), 2) AS avg_clv_per_cohort_customer,
-    SUM(customer_invoice_count) AS total_cohort_orders
-FROM customer_cohorts
-GROUP BY cohort_month
-ORDER BY cohort_month ASC;
+    ROUND(SUM(customer_lifetime_spend), 2) AS cohort_total_spend,
+    ROUND(AVG(customer_lifetime_spend), 2) AS avg_cohort_spend
+FROM customer_first_order
+GROUP BY acquisition_month
+ORDER BY acquisition_month ASC;

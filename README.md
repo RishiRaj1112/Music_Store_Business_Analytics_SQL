@@ -12,8 +12,8 @@
 This project delivers an end-to-end commercial and customer analytics evaluation of a multinational digital music store. Using an **11-table normalized relational database (3NF)** spanning **3,500+ track records** and **18,300+ total operational records**, this analysis addresses strategic business challenges across:
 - **Global Event Marketing**: Identifying high-density, revenue-maximizing cities to host live promotional music festivals.
 - **Catalog Strategy & Artist Footprint**: Evaluating rock genre dominance and track length distributions.
-- **Customer Lifetime Value (CLV) Tiering**: Segmenting customers into statistically balanced loyalty tiers (**Platinum, Gold, Silver, Bronze**) using window functions (`NTILE`).
-- **Customer Retention & Growth Trajectory**: Tracking Month-over-Month (MoM) revenue momentum and repurchase intervals using window functions (`LAG`).
+- **Customer Lifetime Value (CLV) Tiering**: Segmenting customers into clear loyalty tiers (**Platinum, Gold, Silver, Bronze**) using Common Table Expressions (CTEs) and window functions (`DENSE_RANK`).
+- **Customer Retention & Business Growth**: Tracking monthly sales growth trajectory and calculating customer retention and repeat purchase rates.
 - **Cross-Border Taste Preferences**: Mapping country-specific musical genre affinity using window functions (`DENSE_RANK`).
 
 ---
@@ -101,70 +101,68 @@ LIMIT 5;
 
 ---
 
-### 3. Customer Lifetime Value (CLV) & Loyalty Tiers (`NTILE`)
-* **Business Question**: How is customer spend distributed across our base, and how can we establish statistically balanced loyalty tiers?
-* **Analytical Method**: Common Table Expression (CTE) combined with `NTILE(4)` window function to partition spend into quartiles.
+### 3. Customer Lifetime Value (CLV) & Loyalty Tiers (`DENSE_RANK`)
+* **Business Question**: How is customer spend distributed across our base, and how can we rank customers and establish loyalty tiers?
+* **Analytical Method**: Common Table Expression (CTE) combined with `DENSE_RANK()` window function to rank spenders and `CASE WHEN` to assign tiers.
 * **Key Finding**:
-  - **Platinum Tier (Top 25%)**: Averages **$106.59** in spend per customer, driving **33.9% ($1,598.85)** of cumulative gross store revenue.
-  - **Bronze Tier (Bottom 25%)**: Averages **$54.73** per customer.
-  - Demonstrates strong revenue concentration among top-quartile accounts, validating the need for dedicated VIP retention programs.
+  - **Platinum Tier ($100+)**: Top high-value spenders drive disproportionately high revenue and average $106+ in spend.
+  - Ranking customers with `DENSE_RANK()` ensures transparent, fair ordinal placement without skipping ranks.
 
 ```sql
 WITH customer_clv AS (
     SELECT 
         c.customer_id,
         CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+        c.country,
+        COUNT(i.invoice_id) AS total_orders,
         ROUND(SUM(i.total), 2) AS lifetime_spend,
-        NTILE(4) OVER (ORDER BY SUM(i.total) DESC) AS clv_quartile
+        ROUND(AVG(i.total), 2) AS average_order_value,
+        DENSE_RANK() OVER (ORDER BY SUM(i.total) DESC) AS customer_rank
     FROM customer c
     INNER JOIN invoice i ON c.customer_id = i.customer_id
-    GROUP BY c.customer_id, customer_name
+    GROUP BY c.customer_id, customer_name, c.country
 )
 SELECT 
-    clv_quartile,
+    customer_id,
+    customer_name,
+    country,
+    total_orders,
+    lifetime_spend,
+    average_order_value,
+    customer_rank,
     CASE 
-        WHEN clv_quartile = 1 THEN 'Platinum'
-        WHEN clv_quartile = 2 THEN 'Gold'
-        WHEN clv_quartile = 3 THEN 'Silver'
-        ELSE 'Bronze'
-    END AS loyalty_tier,
-    COUNT(customer_id) AS customer_count,
-    ROUND(MIN(lifetime_spend), 2) AS min_spend,
-    ROUND(MAX(lifetime_spend), 2) AS max_spend,
-    ROUND(AVG(lifetime_spend), 2) AS avg_spend,
-    ROUND(SUM(lifetime_spend), 2) AS tier_revenue
+        WHEN lifetime_spend >= 100.00 THEN 'Platinum Tier ($100+)'
+        WHEN lifetime_spend >= 75.00  THEN 'Gold Tier ($75 - $99.99)'
+        WHEN lifetime_spend >= 50.00  THEN 'Silver Tier ($50 - $74.99)'
+        ELSE 'Bronze Tier (< $50)'
+    END AS loyalty_tier
 FROM customer_clv
-GROUP BY clv_quartile
-ORDER BY clv_quartile;
+ORDER BY lifetime_spend DESC;
 ```
 
 ---
 
-### 4. Revenue Trajectory & Retention Dynamics (`LAG`)
-* **Business Question**: What is our Month-over-Month (MoM) revenue momentum, and what is our customer repurchase cadence?
-* **Analytical Method**: CTE computing monthly aggregates paired with `LAG(revenue, 1) OVER (ORDER BY month)` to quantify dollar variance and growth percentage.
-* **Key Finding**: Revenue exhibits recurring mid-quarter spikes followed by contraction (e.g., February 2017 grew +11.72%, April surged +37.14%). Repeat purchasers demonstrate an average re-engagement cadence of ~60 days.
+### 4. Business Growth & Customer Retention Analysis
+* **Business Question**: What is our monthly revenue trajectory, and what percentage of our customer base are repeat buyers?
+* **Analytical Method**: Monthly sales aggregation using `DATE_FORMAT()`, combined with a CTE evaluating repeat purchasing frequency.
+* **Key Finding**: Measuring customers with repeat transactions reveals customer loyalty health and repeat order concentration.
 
 ```sql
-WITH monthly_revenue_summary AS (
+-- Customer Retention Rate
+WITH customer_purchase_counts AS (
     SELECT 
-        DATE_FORMAT(invoice_date, '%Y-%m') AS sales_month,
-        ROUND(SUM(total), 2) AS monthly_revenue
+        customer_id,
+        COUNT(invoice_id) AS order_frequency,
+        ROUND(SUM(total), 2) AS total_spend
     FROM invoice
-    GROUP BY sales_month
+    GROUP BY customer_id
 )
 SELECT 
-    sales_month,
-    monthly_revenue,
-    LAG(monthly_revenue, 1) OVER (ORDER BY sales_month) AS prior_month_revenue,
-    ROUND(monthly_revenue - LAG(monthly_revenue, 1) OVER (ORDER BY sales_month), 2) AS mom_variance,
-    ROUND(
-        ((monthly_revenue - LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)) / 
-        LAG(monthly_revenue, 1) OVER (ORDER BY sales_month)) * 100.0, 
-        2
-    ) AS mom_growth_rate_pct
-FROM monthly_revenue_summary
-ORDER BY sales_month ASC;
+    COUNT(customer_id) AS total_customer_base,
+    SUM(CASE WHEN order_frequency > 1 THEN 1 ELSE 0 END) AS repeat_customers,
+    SUM(CASE WHEN order_frequency = 1 THEN 1 ELSE 0 END) AS one_time_customers,
+    ROUND((SUM(CASE WHEN order_frequency > 1 THEN 1 ELSE 0 END) * 100.0) / COUNT(customer_id), 2) AS retention_rate_pct
+FROM customer_purchase_counts;
 ```
 
 ---
@@ -208,9 +206,9 @@ ORDER BY country ASC;
 ## 📈 Strategic Recommendations
 
 1. **Targeted Event Activation in Prague**: Launch the inaugural promotional music festival in Prague to capitalize on the city's disproportionately high revenue density ($273.24) and order volume.
-2. **VIP Loyalty Program (Platinum Concierge)**: Because the top 25% of customers generate ~34% of revenue, establish early access to limited vinyl pressings and concert ticket presales for Platinum tier members.
+2. **VIP Loyalty Program (Platinum Concierge)**: Because Platinum tier customers generate top-bracket spend, establish early access to limited vinyl pressings and concert ticket presales for top-ranked accounts.
 3. **Regionalized Catalog Marketing**: Customize digital homepage carousels and email campaigns by territory (e.g., feature Alternative & Punk playlists in Argentina rather than default Rock compilations).
-4. **Lifecycle Re-Engagement Cadence**: Deploy automated re-engagement coupons at day 45 post-purchase to capture users before they breach the 60-day average repurchase window.
+4. **Retention Campaigns**: Maintain engagement with repeat purchasers through personalized genre recommendations based on their top purchased artist catalogs.
 
 ---
 
@@ -234,8 +232,8 @@ ORDER BY country ASC;
 │   ├── 02_data_loading_and_audit.sql        # Record count audits & data integrity checks
 │   ├── 03_business_expansion_and_city_analytics.sql # Promotional event cities & market analysis
 │   ├── 04_catalog_and_artist_analytics.sql  # Rock catalog depth & track length anomalies
-│   ├── 05_clv_and_loyalty_tier_segmentation.sql     # Customer Lifetime Value & NTILE tiering
-│   ├── 06_customer_retention_and_mom_trends.sql     # MoM revenue growth & repurchase cadence (LAG)
+│   ├── 05_clv_and_loyalty_tier_segmentation.sql     # Customer Lifetime Value & DENSE_RANK tiering
+│   ├── 06_customer_retention_and_mom_trends.sql     # Monthly growth & customer retention rate
 │   ├── 07_country_genre_consumption_patterns.sql    # Country-wise genre preferences (DENSE_RANK)
 │   └── 08_master_analytics_suite.sql        # Consolidated master analysis script
 ├── INTERVIEW_DEFENSE_GUIDE.md               # Technical interview Q&A & project walkthrough
